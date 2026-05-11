@@ -1,0 +1,31 @@
+# Скомпільовані бінарні файли (EXE та DLL)
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Файли зневадження та тимчасові файли MSVC
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.lib
+
+# Папки збірки (CMake та Visual Studio)
+build/
+out/
+bin/
+x64/
+Debug/
+Release/
+
+# Тимчасові файли VS Code / Visual Studio
+.vscode/
+.vs/
+*.sln
+*.vcxproj
+*.filters
+*.user
+
+# Локальні папки з бібліотеками (якщо ви їх не змінюєте)
+libs/opencv/
