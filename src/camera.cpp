@@ -80,10 +80,11 @@ bool CameraManager::getFrame(cv::Mat& outFrame) {
 
 void CameraManager::captureThread(int cameraId) {
     cv::VideoCapture cap(cameraId, cv::CAP_DSHOW);
-    cap.set(cv::CAP_PROP_FRAME_WIDTH, 800);
-    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 600);
-    cap.set(cv::CAP_PROP_FPS, 60);
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+    cap.set(cv::CAP_PROP_FPS, 30);
     cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+
 
     if (!cap.isOpened()) {
         Logger::addLog("[ERROR] Cannot open camera ID: " + std::to_string(cameraId));
@@ -99,7 +100,8 @@ void CameraManager::captureThread(int cameraId) {
         cap.retrieve(localFrame);
         
         if (!localFrame.empty()) {
-            cv::resize(localFrame, resizedFrame, cv::Size(800, 600));
+            cv::resize(localFrame, resizedFrame, cv::Size(640, 480));
+            cv::GaussianBlur(resizedFrame, resizedFrame, cv::Size(3, 3), 0);
             std::lock_guard<std::mutex> lock(frameMutex);
             sharedFrame = resizedFrame.clone();
         }

@@ -27,7 +27,7 @@ std::string NetworkManager::my_id = "";
 std::string NetworkManager::target_id = "";
 std::atomic<long long> NetworkManager::current_rtt(0);
 
-std::atomic<int> NetworkManager::current_jpeg_quality(30);
+std::atomic<int> NetworkManager::current_jpeg_quality(20);
 std::map<uint32_t, long long> NetworkManager::send_times;
 cv::Mat NetworkManager::pilotFrame;
 std::mutex NetworkManager::frameMutex;
@@ -271,7 +271,7 @@ void NetworkManager::networkTask(std::string ip, int port, ClientRole role) {
 
                         int qual = current_jpeg_quality.load();
                         if (rtt < 50) {
-                            qual += 1; if (qual > 80) qual = 80;
+                            qual += 1; if (qual > 50) qual = 50;
                         } else if (rtt <= 130) {
                             if (qual > 60) qual -= 1;
                             else if (qual < 50) qual += 1;
@@ -386,7 +386,7 @@ void NetworkManager::networkTask(std::string ip, int port, ClientRole role) {
                         }
                     }
                 }
-                next_video_time = now + std::chrono::milliseconds(16);
+                next_video_time = now + std::chrono::milliseconds(33);
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));

@@ -116,6 +116,10 @@ int main() {
             }
             std::vector<std::string> logsCopy = Logger::getLogs();
 
+            if (!frameCopy.empty()) {
+                cv::resize(frameCopy, frameCopy, cv::Size(800, 600));
+            }
+
             // --- 1. ВІДЕО ТА ПАНЕЛІ ---
             int currentVideoHeight = 0;
             if (!frameCopy.empty()) {
