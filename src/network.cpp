@@ -13,6 +13,12 @@
 
 extern std::atomic<uint16_t> rc_channels[16];
 
+namespace {
+    std::mutex jpegMutex;
+    std::vector<uchar> latest_jpeg;
+    bool is_new_jpeg = false;
+}
+
 std::atomic<bool> NetworkManager::isRunning(false);
 std::atomic<bool> NetworkManager::connected(false);
 std::thread NetworkManager::netThread;
@@ -63,8 +69,33 @@ ClientRole NetworkManager::getRole() { return currentRole; }
 bool NetworkManager::isConnected() { return connected.load(); }
 
 bool NetworkManager::getPilotFrame(cv::Mat& outFrame) {
+    bool should_decode = false;
+    std::vector<uchar> local_jpeg;
+    
+    {
+        std::lock_guard<std::mutex> lock(jpegMutex);
+        if (is_new_jpeg) {
+            local_jpeg = latest_jpeg;
+            is_new_jpeg = false;
+            should_decode = true;
+        }
+    }
+
+    if (should_decode && !local_jpeg.empty()) {
+        cv::Mat decoded = cv::imdecode(local_jpeg, cv::IMREAD_COLOR);
+        if (!decoded.empty()) {
+            std::lock_guard<std::mutex> lock(frameMutex);
+            pilotFrame = decoded;
+        } else {
+            Logger::addLog("[SYS_WARN] Deferred frame decode failed.");
+        }
+    }
+
     std::lock_guard<std::mutex> lock(frameMutex);
-    if (!pilotFrame.empty()) { outFrame = pilotFrame.clone(); return true; }
+    if (!pilotFrame.empty()) { 
+        outFrame = pilotFrame.clone(); 
+        return true; 
+    }
     return false;
 }
 
@@ -215,7 +246,6 @@ void NetworkManager::networkTask(std::string ip, int port, ClientRole role) {
             if (n <= 0) {
                 int err = WSAGetLastError();
                 if (err != WSAEWOULDBLOCK && err != 0) {
-                    // Логуємо лише реальні помилки, ігноруємо стан "немає даних" (WSAEWOULDBLOCK)
                     Logger::addLog("[NET_ERR] UDP recvfrom error: " + std::to_string(err));
                 }
                 break;
@@ -240,8 +270,14 @@ void NetworkManager::networkTask(std::string ip, int port, ClientRole role) {
                         sendto(udpSock, rtt_sync.c_str(), rtt_sync.length(), 0, (SOCKADDR*)&udpAddr, sizeof(udpAddr));
 
                         int qual = current_jpeg_quality.load();
-                        if (rtt < 70) { qual += 2; if (qual > 80) qual = 80; }
-                        else if (rtt > 120) { qual -= 5; if (qual < 15) qual = 15; }
+                        if (rtt < 50) {
+                            qual += 1; if (qual > 80) qual = 80;
+                        } else if (rtt <= 130) {
+                            if (qual > 60) qual -= 1;
+                            else if (qual < 50) qual += 1;
+                        } else {
+                            qual -= 5; if (qual < 15) qual = 15; 
+                        }
                         current_jpeg_quality.store(qual);
                     }
                 }
@@ -261,22 +297,32 @@ void NetworkManager::networkTask(std::string ip, int port, ClientRole role) {
                     uint8_t t_ch = buf[4];
                     uint8_t ch_idx = buf[5];
 
+                    if (recv_f_id < highest_f && (highest_f - recv_f_id) > 1000) { 
+                        highest_f = recv_f_id; 
+                        assembly.clear(); 
+                    }
+
                     if (recv_f_id >= highest_f) {
                         highest_f = recv_f_id;
                         assembly[recv_f_id].total_chunks = t_ch;
                         assembly[recv_f_id].chunks[ch_idx] = std::vector<char>(buf + 6, buf + n);
 
                         if (assembly[recv_f_id].chunks.size() == t_ch) {
+                            size_t total_size = 0;
+                            for (int i = 0; i < t_ch; i++) {
+                                total_size += assembly[recv_f_id].chunks[i].size();
+                            }
+                            
                             std::vector<uchar> jpg;
+                            jpg.reserve(total_size);
                             for (int i = 0; i < t_ch; i++) {
                                 jpg.insert(jpg.end(), assembly[recv_f_id].chunks[i].begin(), assembly[recv_f_id].chunks[i].end());
                             }
-                            cv::Mat decoded = cv::imdecode(jpg, cv::IMREAD_COLOR);
-                            if (!decoded.empty()) { 
-                                std::lock_guard<std::mutex> lock(frameMutex); 
-                                pilotFrame = decoded; 
-                            } else {
-                                Logger::addLog("[SYS_WARN] Frame decode failed. ID: " + std::to_string(recv_f_id));
+                            
+                            {
+                                std::lock_guard<std::mutex> lock(jpegMutex);
+                                latest_jpeg = std::move(jpg);
+                                is_new_jpeg = true;
                             }
                             assembly.erase(recv_f_id);
                             
@@ -285,19 +331,24 @@ void NetworkManager::networkTask(std::string ip, int port, ClientRole role) {
                         }
                     }
                 }
-            } catch (const std::exception& e) {
-                Logger::addLog(std::string("[NET_WARN] Parse exception: ") + e.what() + " on msg: " + msg);
+            } catch (const std::exception& e) {}
+        }
+
+        if (role == ClientRole::TEST_PILOT) {
+            for (auto it = assembly.begin(); it != assembly.end(); ) {
+                if (highest_f > it->first && (highest_f - it->first) > 30) {
+                    it = assembly.erase(it);
+                } else {
+                    ++it;
+                }
             }
         }
 
-        // --- ВІДПРАВКА (UDP) ---
         auto now = std::chrono::steady_clock::now();
         if (role == ClientRole::TEST_PILOT) {
             if (now >= next_ctrl_time) {
                 std::string ctrl = my_id + buildControlPacket();
-                if (sendto(udpSock, ctrl.c_str(), ctrl.length(), 0, (SOCKADDR*)&udpAddr, sizeof(udpAddr)) == SOCKET_ERROR) {
-                    // Логування помилок відправки приглушено, щоб не спамити консоль на частоті 50Гц
-                }
+                sendto(udpSock, ctrl.c_str(), ctrl.length(), 0, (SOCKADDR*)&udpAddr, sizeof(udpAddr));
                 next_ctrl_time = now + std::chrono::milliseconds(20);
             }
             
@@ -322,7 +373,7 @@ void NetworkManager::networkTask(std::string ip, int port, ClientRole role) {
                         uint8_t total_ch = std::ceil((float)jpgBuf.size() / CHUNK_SIZE);
                         for (uint8_t i = 0; i < total_ch; i++) {
                             std::vector<char> pkt;
-                            pkt.reserve(CHUNK_SIZE + 32); // Запобігання зайвим алокаціям
+                            pkt.reserve(CHUNK_SIZE + 32); 
                             pkt.insert(pkt.end(), my_id.begin(), my_id.end());
                             uint32_t nf = htonl(f_id); pkt.insert(pkt.end(), (char*)&nf, (char*)&nf + 4);
                             pkt.push_back(total_ch); pkt.push_back(i);
@@ -335,7 +386,7 @@ void NetworkManager::networkTask(std::string ip, int port, ClientRole role) {
                         }
                     }
                 }
-                next_video_time = now + std::chrono::milliseconds(33);
+                next_video_time = now + std::chrono::milliseconds(16);
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));

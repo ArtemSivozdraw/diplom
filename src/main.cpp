@@ -14,29 +14,20 @@
 #include "network.h"
 #include "joystick.h"
 
-// Глобальний масив каналів
 std::atomic<uint16_t> rc_channels[16];
 
-// Допоміжна функція для переносу тексту в логах
+// ОПТИМІЗАЦІЯ 1: Усунуто виклик cv::getTextSize. Миттєве розбиття тексту математичною апроксимацією.
 std::vector<std::string> wrapText(const std::string& text, int maxWidth, double fontScale, int thickness) {
     std::vector<std::string> wrappedLines;
-    std::string currentLine = "";
-    int baseline = 0;
-    for (char c : text) {
-        std::string testLine = currentLine + c;
-        cv::Size textSize = cv::getTextSize(testLine, cv::FONT_HERSHEY_SIMPLEX, fontScale, thickness, &baseline);
-        if (textSize.width > maxWidth && !currentLine.empty()) {
-            wrappedLines.push_back(currentLine);
-            currentLine = std::string(1, c);
-        } else {
-            currentLine += c;
-        }
+    int approxCharWidth = (fontScale >= 0.5) ? 10 : 8; 
+    size_t maxChars = std::max<size_t>(1, maxWidth / approxCharWidth);
+
+    for (size_t i = 0; i < text.length(); i += maxChars) {
+        wrappedLines.push_back(text.substr(i, maxChars));
     }
-    if (!currentLine.empty()) wrappedLines.push_back(currentLine);
     return wrappedLines;
 }
 
-// Функція запису в буфер обміну Windows
 void setClipboardText(const std::string& text) {
     if (OpenClipboard(nullptr)) {
         EmptyClipboard();
@@ -50,7 +41,6 @@ void setClipboardText(const std::string& text) {
     }
 }
 
-// Функція читання з буфера обміну Windows (Ctrl+V)
 std::string getClipboardText() {
     std::string text = "";
     if (OpenClipboard(nullptr)) {
@@ -84,11 +74,10 @@ int main() {
         "AUX9", "AUX10", "AUX11", "AUX12"
     };
 
-    // Ініціалізація значень каналів за замовчуванням
     for(int i = 0; i < 16; i++) rc_channels[i].store(992);
-    rc_channels[2].store(172); // Газ в нуль
-    rc_channels[4].store(172); // Disarm
-    rc_channels[7].store(172); // Angle Mode
+    rc_channels[2].store(172); 
+    rc_channels[4].store(172); 
+    rc_channels[7].store(172); 
 
     Logger::addLog("[SYSTEM] Application started.");
 
@@ -98,6 +87,9 @@ int main() {
     std::string currentCommand = "";
     int cursorPosition = 0;
     bool isAppRunning = true;
+
+    // ОПТИМІЗАЦІЯ 2: Виділення пам'яті під полотно один раз перед циклом
+    cv::Mat canvas(WINDOW_HEIGHT, WINDOW_WIDTH, CV_8UC3);
 
     try {
         cv::namedWindow("Drone Control Client", cv::WINDOW_AUTOSIZE);
@@ -109,10 +101,10 @@ int main() {
                 break;
             }
 
-            cv::Mat canvas(WINDOW_HEIGHT, WINDOW_WIDTH, CV_8UC3, cv::Scalar(0, 0, 0));
+            // Очищення полотна замість повної реалокації
+            canvas.setTo(cv::Scalar(0, 0, 0));
             cv::Mat frameCopy;
             
-            // Отримання кадру залежно від ролі
             if (NetworkManager::getRole() == ClientRole::TEST_PILOT) {
                 NetworkManager::getPilotFrame(frameCopy);
             } else {
@@ -120,7 +112,6 @@ int main() {
             }
             std::vector<std::string> logsCopy = Logger::getLogs();
 
-            // --- 1. ВІДЕО ТА ПАНЕЛІ ---
             int currentVideoHeight = 0;
             if (!frameCopy.empty()) {
                 currentVideoHeight = frameCopy.rows;
@@ -134,11 +125,9 @@ int main() {
             cv::line(canvas, cv::Point(WINDOW_WIDTH - RIGHT_PANEL_W, 0), cv::Point(WINDOW_WIDTH - RIGHT_PANEL_W, WINDOW_HEIGHT), cv::Scalar(255, 255, 255), 1);
             cv::line(canvas, cv::Point(LEFT_PANEL_W, currentVideoHeight), cv::Point(WINDOW_WIDTH - RIGHT_PANEL_W, currentVideoHeight), cv::Scalar(255, 255, 255), 1);
             
-
             std::string roleStr = (NetworkManager::getRole() == ClientRole::DRONE) ? "[MODE: DRONE]" : 
                                   (NetworkManager::getRole() == ClientRole::TEST_PILOT) ? "[MODE: TEST_PILOT]" : "[MODE: OFFLINE]";
             
-            // Зчитуємо RTT з мережевого модуля, якщо є з'єднання
             std::string rttStr = "";
             if (NetworkManager::isConnected()) {
                 rttStr = "   |   RTT: " + std::to_string(NetworkManager::getRTT()) + " ms";
@@ -146,7 +135,6 @@ int main() {
             
             cv::putText(canvas, "RC CHANNELS LIVE " + roleStr + rttStr, cv::Point(LEFT_PANEL_W + 10, currentVideoHeight + 20), cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(255, 255, 255), 1);
             
-            // --- 2. ВІДОБРАЖЕННЯ КАНАЛІВ (Смужки та назви) ---
             int chStartX = LEFT_PANEL_W + 10;
             int chStartY = currentVideoHeight + 40;
             int colWidth = 195; 
@@ -165,7 +153,6 @@ int main() {
                 cv::putText(canvas, std::to_string(static_cast<int>(pct * 100)) + "%", cv::Point(x + 150, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(255, 255, 255), 1);
             }
 
-            // --- 3. ЛОГИ (Знизу вгору) ---
             cv::Mat rightPanel = canvas(cv::Rect(WINDOW_WIDTH - RIGHT_PANEL_W, 0, RIGHT_PANEL_W, WINDOW_HEIGHT));
             cv::putText(rightPanel, "SYSTEM LOGS", cv::Point(10, 25), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
             cv::line(rightPanel, cv::Point(0, 35), cv::Point(RIGHT_PANEL_W, 35), cv::Scalar(255, 255, 255), 1);
@@ -181,7 +168,6 @@ int main() {
                 }
             }
 
-            // --- 4. ТЕРМІНАЛ ТА ІСТОРІЯ ---
             cv::Mat leftPanel = canvas(cv::Rect(0, 0, LEFT_PANEL_W, WINDOW_HEIGHT));
             cv::rectangle(leftPanel, cv::Rect(0, WINDOW_HEIGHT - INPUT_BOX_H + 2, 58, INPUT_BOX_H - 4), cv::Scalar(0, 0, 0), cv::FILLED);
             cv::rectangle(canvas, cv::Rect(0, WINDOW_HEIGHT - INPUT_BOX_H, LEFT_PANEL_W, INPUT_BOX_H), cv::Scalar(255, 255, 255), 1);
@@ -191,11 +177,11 @@ int main() {
             std::string cursorStr = ((std::chrono::system_clock::now().time_since_epoch().count() / 5000000) % 2 == 0) ? "|" : " ";
             if (cursorPosition >= 0 && cursorPosition <= (int)displayCmd.length()) displayCmd.insert(cursorPosition, cursorStr);
 
+            // ОПТИМІЗАЦІЯ 3: Видалення cv::getTextSize для скролінгу вводу
             std::string visibleCmd = displayCmd;
-            int baseline = 0, maxTextWidth = LEFT_PANEL_W - 70; 
-            while (true) {
-                cv::Size textSize = cv::getTextSize(visibleCmd, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline);
-                if (textSize.width > maxTextWidth && !visibleCmd.empty()) visibleCmd.erase(0, 1); else break;
+            size_t maxCharsInput = (LEFT_PANEL_W - 70) / 10; 
+            if (visibleCmd.length() > maxCharsInput) {
+                visibleCmd.erase(0, visibleCmd.length() - maxCharsInput);
             }
             cv::putText(leftPanel, visibleCmd, cv::Point(60, WINDOW_HEIGHT - 35), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
 
@@ -215,32 +201,31 @@ int main() {
 
             cv::imshow("Drone Control Client", canvas);
 
-            // --- 5. ОБРОБКА КЛАВІАТУРИ ТА ПАРСЕР ---
-            int key = cv::waitKeyEx(15); 
+            // ОПТИМІЗАЦІЯ 4: Зменшено затримку UI-потоку з 15 мс до 1 мс
+            int key = cv::waitKeyEx(1); 
             if (key != -1) {
-                if (key == 2490368 || key == 65362) { // ВГОРУ
+                if (key == 2490368 || key == 65362) { 
                     if (!rawHistory.empty() && historyIndex > 0) {
                         historyIndex--; currentCommand = rawHistory[historyIndex]; cursorPosition = currentCommand.length();
                     }
                 } 
-                else if (key == 2621440 || key == 65364) { // ВНИЗ
+                else if (key == 2621440 || key == 65364) { 
                     if (!rawHistory.empty() && historyIndex < (int)rawHistory.size() - 1) {
                         historyIndex++; currentCommand = rawHistory[historyIndex]; cursorPosition = currentCommand.length();
                     } else if (historyIndex == (int)rawHistory.size() - 1) {
                         historyIndex++; currentCommand = ""; cursorPosition = 0;
                     }
                 } 
-                else if (key == 2424832 || key == 65361) { // ВЛІВО
+                else if (key == 2424832 || key == 65361) { 
                     if (cursorPosition > 0) cursorPosition--;
                 }
-                else if (key == 2555904 || key == 65363) { // ВПРАВО
+                else if (key == 2555904 || key == 65363) { 
                     if (cursorPosition < (int)currentCommand.length()) cursorPosition++;
                 }
                 else {
                     int asciiCode = key & 0xFF; 
                     if (asciiCode == 27) isAppRunning = false;
-                    else if (asciiCode == 13 || asciiCode == 10) { // ENTER
-                        // --- НОВИЙ БЛОК ДЛЯ КАЛІБРУВАННЯ ---
+                    else if (asciiCode == 13 || asciiCode == 10) { 
                         if (JoystickManager::isCalibrating()) {
                             if (currentCommand.empty()) {
                                 JoystickManager::nextCalibrationStep();
@@ -403,11 +388,11 @@ int main() {
                             }
                             currentCommand = ""; cursorPosition = 0;
                         }
-                    } else if (asciiCode == 8) { // BACKSPACE
+                    } else if (asciiCode == 8) { 
                         if (cursorPosition > 0 && !currentCommand.empty()) {
                             currentCommand.erase(cursorPosition - 1, 1); cursorPosition--;
                         }
-                    } else if (asciiCode == 22) { // CTRL+V
+                    } else if (asciiCode == 22) { 
                         std::string pt = getClipboardText();
                         currentCommand.insert(cursorPosition, pt); cursorPosition += pt.length();
                     } else if (asciiCode >= 32 && asciiCode <= 126) {

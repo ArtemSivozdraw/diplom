@@ -57,7 +57,7 @@ std::vector<std::string> CameraManager::listCameras() {
 }
 
 void CameraManager::start(int cameraId) {
-    if (isRunning) return; // Запобігаємо подвійному запуску
+    if (isRunning) return;
     isRunning = true;
     camThread = std::thread(captureThread, cameraId);
 }
@@ -79,7 +79,12 @@ bool CameraManager::getFrame(cv::Mat& outFrame) {
 }
 
 void CameraManager::captureThread(int cameraId) {
-    cv::VideoCapture cap(cameraId);
+    cv::VideoCapture cap(cameraId, cv::CAP_DSHOW);
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, 800);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 600);
+    cap.set(cv::CAP_PROP_FPS, 60);
+    cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+
     if (!cap.isOpened()) {
         Logger::addLog("[ERROR] Cannot open camera ID: " + std::to_string(cameraId));
         isRunning = false;
@@ -87,20 +92,21 @@ void CameraManager::captureThread(int cameraId) {
     }
     
     Logger::addLog("[VIDEO] Camera ID " + std::to_string(cameraId) + " initialized.");
-    cv::Mat localFrame;
+    cv::Mat localFrame, resizedFrame;
     
     while (isRunning) {
-        cap >> localFrame;
+        cap.grab();
+        cap.retrieve(localFrame);
+        
         if (!localFrame.empty()) {
+            cv::resize(localFrame, resizedFrame, cv::Size(800, 600));
             std::lock_guard<std::mutex> lock(frameMutex);
-            cv::resize(localFrame, sharedFrame, cv::Size(800, 600));
+            sharedFrame = resizedFrame.clone();
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(15));
     }
     cap.release();
     Logger::addLog("[VIDEO] Camera thread stopped.");
     
-    // Очищаємо останній кадр при вимкненні, щоб екран став чорним
     std::lock_guard<std::mutex> lock(frameMutex);
     sharedFrame = cv::Mat(); 
 }
