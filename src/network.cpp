@@ -91,7 +91,7 @@ std::string NetworkManager::buildControlPacket() {
 }
 
 void NetworkManager::networkTask(std::string ip, int port, ClientRole role) {
-WSADATA wsaData; 
+    WSADATA wsaData; 
     int wsaRes = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (wsaRes != 0) {
         Logger::addLog("[NET_ERR] WSAStartup failed. Code: " + std::to_string(wsaRes));
